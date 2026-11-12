@@ -289,17 +289,41 @@ class HFModel:
         self.eos = [self.tok.convert_tokens_to_ids(IM_END), self.tok.eos_token_id]
 
     def generate(self, ids: list, max_new_tokens: int = 300):
+        """Greedy decoding with a manual loop: logits only for the last position (the full-sequence logits of a
+        3-4k token prefill do not fit next to the model in 6 GB), and the KV cache is reused when the new
+        prompt extends the previous one (the agent loop only appends tokens)."""
         torch = self.torch
-        x = torch.tensor([ids], device=self.device)
+        from transformers import DynamicCache
         torch.cuda.synchronize()
         t0 = time.time()
+        prev = getattr(self, "_cache_ids", None)
+        if prev is not None and len(prev) < len(ids) and ids[:len(prev)] == prev:
+            cache, start = self._cache, len(prev)
+        else:
+            cache, start = DynamicCache(), 0
+        new = []
         with torch.no_grad():
-            out = self.model.generate(x, attention_mask=torch.ones_like(x), max_new_tokens=max_new_tokens,
-                                      do_sample=False, temperature=None, top_p=None, top_k=None,
-                                      eos_token_id=self.eos, pad_token_id=self.tok.eos_token_id)
+            for c0 in range(start, len(ids), 1024):  # chunked prefill keeps activation memory bounded
+                c1 = min(len(ids), c0 + 1024)
+                x = torch.tensor([ids[c0:c1]], device=self.device)
+                pos = torch.arange(c0, c1, device=self.device)
+                out = self.model(input_ids=x, past_key_values=cache, use_cache=True, cache_position=pos, logits_to_keep=1)
+            fed = list(ids)
+            for _ in range(max_new_tokens):
+                nxt = int(out.logits[0, -1].argmax())
+                new.append(nxt)
+                if nxt in self.eos:
+                    break
+                fed.append(nxt)
+                p = torch.tensor([len(fed) - 1], device=self.device)
+                out = self.model(input_ids=torch.tensor([[nxt]], device=self.device), past_key_values=cache,
+                                 use_cache=True, cache_position=p, logits_to_keep=1)
         torch.cuda.synchronize()
-        new = out[0, len(ids):].tolist()
+        self._cache, self._cache_ids = cache, fed
         return new, time.time() - t0
+
+    def reset(self):
+        self._cache, self._cache_ids = None, None
 
 
 def id_check(args, seen: str):
@@ -329,6 +353,8 @@ class RunTrace:
 def run_agent(model: HFModel, renderer: Renderer, layer: ToolLayer, user_id: int, system: str, user_turns: list,
               confirm: Optional[Callable] = None, max_steps: int = 8, max_new_tokens: int = 300) -> RunTrace:
     tr = RunTrace()
+    if hasattr(model, "reset"):
+        model.reset()
     pending = list(user_turns)
     first = pending.pop(0)
     tr.users.append(first)
