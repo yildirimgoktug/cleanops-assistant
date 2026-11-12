@@ -41,6 +41,9 @@ TOOLS_PATH = ROOT / "tools" / "tools_v1.json"
 # to keep the prompt short (the 16 tool definitions alone cost ~2,300 tokens).
 PROMPT_DROP = {"page", "page_size", "ordering", "archived", "request_intent", "routing_decision",
                "deadline_before", "deadline_after", "lifecycle", "awaiting_customer_approval_days"}
+# Parameter descriptions kept in the prompt (they carry rules); the others are dropped to save tokens.
+PROMPT_KEEP_DESC = {"message_type", "note", "override_reason", "reason", "my_jobs", "my_managed", "agenda", "customer_id",
+                    "ticket_id", "invoice_id", "status"}
 MAX_LIST_ITEMS = 5
 
 IM_END = "<|im_end|>"
@@ -63,6 +66,8 @@ def prompt_tools(spec: Optional[dict] = None) -> list:
                 continue
             for lim in ("minimum", "maximum", "minLength", "maxLength"):
                 p["properties"][k].pop(lim, None)
+            if k not in PROMPT_KEEP_DESC:
+                p["properties"][k].pop("description", None)
         p.pop("additionalProperties", None)
         out.append({"type": "function", "function": {"name": t["name"], "description": t["description"], "parameters": p}})
     return out
