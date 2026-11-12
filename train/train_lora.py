@@ -111,43 +111,67 @@ class AssistantLossSFTTrainer(SFTTrainer):
 
 
 class TimeBox(TrainerCallback):
-    def __init__(self, a, trainer_ref, log_path, n_train):
+    """Wall-clock budget across interruptions. State (budget used up to the last checkpoint, the decided
+    number of steps, the measured speed) is kept in <out>/timebox_state.json and reloaded on resume.
+    Work done after the last checkpoint of an interrupted segment is lost and not counted."""
+
+    def __init__(self, a, trainer_ref, log_path, n_train, prev=None):
         self.a = a
         self.tr = trainer_ref
         self.log = open(log_path, "a", encoding="utf-8")
         self.n_train = n_train
         self.t_train0 = None
-        self.decided = a.max_steps or None
-        self.s_per_step = None
-        self.eval_seconds = []
-        self._t_eval = None
+        self.start_step = 0
+        prev = prev or {}
+        self.used_before = prev.get("used_s", 0.0)
+        self.segments = prev.get("segments", 0) + 1
+        self.decided = a.max_steps or prev.get("decided")
+        self.s_per_step = prev.get("s_per_step")
+        self.state_path = pathlib.Path(a.out) / "timebox_state.json"
+
+    def used(self):
+        return self.used_before + (time.time() - T_SCRIPT)
 
     def on_train_begin(self, args, state, control, **kw):
         self.t_train0 = time.time()
+        self.start_step = state.global_step
         torch.cuda.reset_peak_memory_stats()
 
+    def on_save(self, args, state, control, **kw):
+        self.state_path.write_text(json.dumps({"used_s": round(self.used(), 1), "decided": self.decided,
+                                               "s_per_step": self.s_per_step, "step": state.global_step,
+                                               "segments": self.segments}))
+        self.write({"event": "checkpoint", "step": state.global_step, "budget_used_s": round(self.used())})
+
     def on_step_end(self, args, state, control, **kw):
-        if self.decided is None and state.global_step == self.a.probe_steps:
-            self.s_per_step = (time.time() - self.t_train0) / state.global_step
-            used = time.time() - T_SCRIPT
+        measured = state.global_step - self.start_step
+        if self.decided is None and state.global_step >= self.a.probe_steps and measured >= 10:
+            self.s_per_step = (time.time() - self.t_train0) / measured
+            used = self.used()
             n_evals_left_guess = 0
             est_eval = self.a.val_n * (self.s_per_step / self.a.ga) * 0.4
             budget = self.a.time_budget_min * 60 - used - 120  # 2 min margin for final eval + save
             # steps s.t. remaining training + evals fit in the budget
+            est_ckpt = 15  # seconds per checkpoint save (adapter + optimizer state)
+            now_step = state.global_step
             extra = 0
             while True:
-                total = self.a.probe_steps + extra + 1
-                n_evals_left_guess = total // self.a.eval_steps - self.a.probe_steps // self.a.eval_steps + 1
-                if (extra + 1) * self.s_per_step + n_evals_left_guess * est_eval > budget:
+                total = now_step + extra + 1
+                n_evals_left_guess = total // self.a.eval_steps - now_step // self.a.eval_steps + 1
+                n_ckpt = total // self.a.save_steps - now_step // self.a.save_steps
+                if (extra + 1) * self.s_per_step + n_evals_left_guess * est_eval + n_ckpt * est_ckpt > budget:
                     break
                 extra += 1
-            self.decided = self.a.probe_steps + extra
+            self.decided = now_step + extra
             AssistantLossSFTTrainer.sched_state["total"] = self.decided
             self.write({"event": "time_box_decision", "step": state.global_step, "s_per_step": round(self.s_per_step, 2),
-                        "elapsed_s": round(used), "decided_total_steps": self.decided,
+                        "budget_used_s": round(used), "decided_total_steps": self.decided,
                         "examples_seen_at_end": self.decided * self.a.ga,
                         "epochs_at_end": round(self.decided * self.a.ga / self.n_train, 3)})
         if self.decided is not None and state.global_step >= self.decided:
+            control.should_training_stop = True
+        if not self.a.max_steps and self.used() > self.a.time_budget_min * 60 - 120:
+            self.write({"event": "budget_exhausted", "step": state.global_step, "budget_used_s": round(self.used())})
             control.should_training_stop = True
         return control
 
@@ -182,6 +206,8 @@ def main():
     ap.add_argument("--ga", type=int, default=8)
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--log", default=str(ROOT / "logs" / "train_log.jsonl"))
+    ap.add_argument("--save-steps", type=int, default=8,
+                    help="checkpoint (adapter + optimizer) every N optimizer steps; the run resumes from the latest one")
     a = ap.parse_args()
     set_seed(a.seed)
     pathlib.Path(a.log).parent.mkdir(exist_ok=True, parents=True)
@@ -202,12 +228,21 @@ def main():
                              target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"])
     total0 = a.max_steps or a.initial_steps_estimate
     AssistantLossSFTTrainer.sched_state.update(total=total0, warmup=max(1, round(0.05 * total0)))
+    # resume after an interruption: latest checkpoint + saved time-box state
+    ckpts = sorted(pathlib.Path(a.out).glob("checkpoint-*"), key=lambda p: int(p.name.split("-")[1]))
+    resume = str(ckpts[-1]) if ckpts else None
+    prev = {}
+    sp = pathlib.Path(a.out) / "timebox_state.json"
+    if resume and sp.exists():
+        prev = json.loads(sp.read_text())
+        if prev.get("decided"):
+            AssistantLossSFTTrainer.sched_state["total"] = prev["decided"]
     cfg = SFTConfig(
         output_dir=a.out, per_device_train_batch_size=1, per_device_eval_batch_size=1,
         gradient_accumulation_steps=a.ga, gradient_checkpointing=True,
         gradient_checkpointing_kwargs={"use_reentrant": False}, learning_rate=a.lr, lr_scheduler_type="linear",
         warmup_ratio=0.05, bf16=True, logging_steps=5, eval_strategy="steps", eval_steps=a.eval_steps,
-        save_strategy="no", seed=a.seed, data_seed=a.seed, max_length=a.max_len, completion_only_loss=True,
+        save_strategy="steps", save_steps=a.save_steps, save_total_limit=1, seed=a.seed, data_seed=a.seed, max_length=a.max_len, completion_only_loss=True,
         report_to="none", max_steps=a.max_steps or 100000, dataloader_num_workers=0, prediction_loss_only=True,
         packing=False, dataset_num_proc=None, max_grad_norm=1.0, disable_tqdm=True,
     )
@@ -215,15 +250,20 @@ def main():
                                       processing_class=tok, peft_config=peft_config)
     trainer.model_accepts_loss_kwargs = False  # our loss is a per-sequence mean; Trainer divides by GA
     trainer.model.print_trainable_parameters()
-    tb = TimeBox(a, trainer, a.log, n_train)
+    tb = TimeBox(a, trainer, a.log, n_train, prev)
     trainer.add_callback(tb)
     tb.write({"event": "start", "n_train": n_train, "n_val_subset": len(val_ds), "dropped_train_over_max_len": dropped_train,
               "max_len": a.max_len, "ga": a.ga, "lr": a.lr, "seed": a.seed, "initial_total_steps": total0,
-              "time_budget_min": a.time_budget_min, "max_steps_fixed": a.max_steps or None})
-    trainer.train()
+              "time_budget_min": a.time_budget_min, "max_steps_fixed": a.max_steps or None,
+              "resume_from": resume and os.path.relpath(resume, ROOT), "segment": tb.segments,
+              "budget_used_before_s": round(tb.used_before)})
+    trainer.train(resume_from_checkpoint=resume)
     final_eval = trainer.evaluate()
     trainer.model.save_pretrained(a.out)  # adapter only
     tok.save_pretrained(a.out)
+    import shutil
+    for c in pathlib.Path(a.out).glob("checkpoint-*"):  # keep only the final adapter (disk space)
+        shutil.rmtree(c, ignore_errors=True)
     hist = [h for h in trainer.state.log_history if "loss" in h]
     summary = {
         "model": MODEL, "adapter_dir": os.path.relpath(a.out, ROOT),
@@ -235,11 +275,13 @@ def main():
         "warmup_steps": AssistantLossSFTTrainer.sched_state["warmup"], "scheduled_total_steps": AssistantLossSFTTrainer.sched_state["total"],
         "max_len": a.max_len, "seed": a.seed, "time_budget_min": a.time_budget_min,
         "s_per_step_probe": round(tb.s_per_step, 2) if tb.s_per_step else None,
-        "wall_clock_s": round(time.time() - T_SCRIPT), "train_runtime_s": round(time.time() - tb.t_train0),
+        "wall_clock_s": round(tb.used()), "segments": tb.segments,
+        "wall_clock_note": "budget used across segments, counted up to each segment's last checkpoint for interrupted segments",
+        "last_segment_wall_s": round(time.time() - T_SCRIPT), "train_runtime_s": round(time.time() - tb.t_train0),
         "first_train_loss": hist[0]["loss"] if hist else None, "final_train_loss": hist[-1]["loss"] if hist else None,
         "final_val_loss": final_eval.get("eval_loss"), "val_subset_n": len(val_ds),
         "eval_history": [{"step": h["step"], "eval_loss": h["eval_loss"]} for h in trainer.state.log_history if "eval_loss" in h],
-        "peak_vram_gib": round(torch.cuda.max_memory_allocated() / 2 ** 30, 2),
+        "peak_vram_gib": round(torch.cuda.max_memory_allocated() / 2 ** 30, 2), "peak_vram_note": "last segment",
         "versions": {"torch": torch.__version__, "transformers": __import__("transformers").__version__,
                      "trl": __import__("trl").__version__, "peft": __import__("peft").__version__},
     }
