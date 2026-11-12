@@ -297,6 +297,18 @@ class HFModel:
         return new, time.time() - t0
 
 
+def id_check(args, seen: str):
+    """Integer arguments named *_id whose value never appeared in the context so far count as invented."""
+    id_args, invented = [], []
+    if isinstance(args, dict):
+        for k, v in args.items():
+            if k.endswith("_id") and isinstance(v, int) and not isinstance(v, bool):
+                id_args.append(v)
+                if not re.search(r"(?<!\d)" + str(v) + r"(?!\d)", seen):
+                    invented.append(v)
+    return id_args, invented
+
+
 @dataclass
 class RunTrace:
     turns: list = field(default_factory=list)      # assistant turns: {text, content, calls, parse_errors}
@@ -316,6 +328,7 @@ def run_agent(model: HFModel, renderer: Renderer, layer: ToolLayer, user_id: int
     first = pending.pop(0)
     tr.users.append(first)
     ids = renderer.prefix(system, first)
+    seen = system + "\n" + first   # everything the model has been shown, to detect invented ids
     for _ in range(max_steps):
         new, secs = model.generate(ids, max_new_tokens)
         tr.steps += 1
@@ -333,6 +346,7 @@ def run_agent(model: HFModel, renderer: Renderer, layer: ToolLayer, user_id: int
             results = []
             for c in calls:
                 rec = layer.execute(user_id, c["name"], c["arguments"], confirm)
+                rec["id_args"], rec["invented_ids"] = id_check(c["arguments"], seen)
                 tr.calls.append(rec)
                 results.append(dump(compact(c["name"], rec["result"])))
             for _e in errors:
@@ -341,10 +355,12 @@ def run_agent(model: HFModel, renderer: Renderer, layer: ToolLayer, user_id: int
                 results.append(dump({"error": {"status": 400, "code": "invalid_tool_call",
                                                "detail": "The tool call was not valid JSON."}}))
             ids = ids + renderer.enc(tool_block(results))
+            seen += "\n" + "\n".join(results)
             continue
         if pending:
             nxt = pending.pop(0)
             tr.users.append(nxt)
+            seen += "\n" + nxt
             ids = ids + renderer.enc(user_block(nxt))
             continue
         tr.stopped = "final_answer"
