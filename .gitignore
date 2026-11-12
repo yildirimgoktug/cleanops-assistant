@@ -1,0 +1,7 @@
+__pycache__/
+.venv/
+*.gguf
+*.safetensors
+data/raw/
+outputs/
+.env
