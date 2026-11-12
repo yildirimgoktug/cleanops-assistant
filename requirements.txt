@@ -1,0 +1,11 @@
+# Install torch FIRST from the PyTorch CUDA index (a bare `torch` line here would pull the CPU wheel):
+#   pip install torch==2.9.1 --index-url https://download.pytorch.org/whl/cu128
+# Then: pip install -r requirements.txt   (exact resolved versions: requirements-lock.txt)
+transformers==4.57.1
+trl==0.24.0
+peft==0.16.0
+accelerate
+datasets
+jsonschema
+pytest
+bitsandbytes  # optional; verified working on Windows (4-bit NF4 LoRA ran)

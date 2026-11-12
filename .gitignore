@@ -1,7 +1,15 @@
 __pycache__/
+.pytest_cache/
 .venv/
 *.gguf
 *.safetensors
-data/raw/
-outputs/
+*.bin
 .env
+# model outputs, adapters, caches
+outputs/
+# run logs (summaries go to results/)
+logs/
+# large generated datasets (small samples are committed)
+data/raw/
+data/generated/*.jsonl
+!data/generated/sample_*.jsonl
