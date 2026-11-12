@@ -1,0 +1,272 @@
+{
+  "version": "v1",
+  "about": "Model-facing tool set for the CleanOps assistant. Ids are integers, dates are ISO YYYY-MM-DD. 'access' says whether a tool only reads or also changes data; write tools are shown to the user for confirmation before they run. The permission rules are enforced by the backend, not by the model.",
+  "tools": [
+    {
+      "name": "search_records",
+      "access": "read",
+      "description": "Search tickets, extra-work requests, customers, buildings and people by part of a name, a title, a ticket number (TCK-...) or an extra-work id, and return their ids. Use this whenever the user names something instead of giving an id.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "q": {"type": "string", "minLength": 2, "description": "Search text, at least 2 characters."}
+        },
+        "required": ["q"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_tickets",
+      "access": "read",
+      "description": "List the tickets the user may see, newest first, with optional filters.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "array", "items": {"type": "string", "enum": ["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "ON_HOLD", "WAITING_MANAGER_REVIEW", "WAITING_CUSTOMER_APPROVAL", "REJECTED", "APPROVED", "CLOSED", "REOPENED_BY_ADMIN", "CONVERTED_TO_EXTRA_WORK"]}},
+          "priority": {"type": "array", "items": {"type": "string", "enum": ["NORMAL", "HIGH", "URGENT"]}},
+          "type": {"type": "array", "items": {"type": "string", "enum": ["REPORT", "COMPLAINT", "REQUEST", "SUGGESTION", "QUOTE_REQUEST", "OTHER"]}},
+          "building_id": {"type": "integer", "minimum": 1},
+          "customer_id": {"type": "integer", "minimum": 1},
+          "my_jobs": {"type": "boolean", "description": "Only tickets the user is assigned to as field staff."},
+          "my_managed": {"type": "boolean", "description": "Only tickets the user manages."},
+          "search": {"type": "string", "description": "Text in ticket number, title or room."},
+          "date_from": {"type": "string", "format": "date", "description": "Created on or after."},
+          "date_to": {"type": "string", "format": "date", "description": "Created on or before."},
+          "agenda": {"type": "string", "enum": ["today", "upcoming", "overdue", "unscheduled"], "description": "Planned today, planned later, planned in the past but not finished, or not planned."},
+          "awaiting_customer_approval_days": {"type": "integer", "minimum": 0, "description": "Waiting for customer approval for at least this many days."},
+          "archived": {"type": "boolean"},
+          "ordering": {"type": "string", "enum": ["created_at", "-created_at", "updated_at", "-updated_at", "priority", "-priority", "status", "-status"]},
+          "page": {"type": "integer", "minimum": 1},
+          "page_size": {"type": "integer", "minimum": 1, "maximum": 200}
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_ticket",
+      "access": "read",
+      "description": "Get one ticket in full, including the next statuses this user is allowed to set.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {"type": "integer", "minimum": 1, "description": "Numeric id, not the TCK number."}
+        },
+        "required": ["ticket_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_ticket_stats",
+      "access": "read",
+      "description": "Count the tickets the user may see: total, per status, per priority, open, waiting for customer approval, urgent.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "date_from": {"type": "string", "format": "date"},
+          "date_to": {"type": "string", "format": "date"},
+          "customer_id": {"type": "integer", "minimum": 1},
+          "archived": {"type": "boolean"}
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_ticket_messages",
+      "access": "read",
+      "description": "Read the messages on one ticket, oldest first (only the message types this user may see).",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {"type": "integer", "minimum": 1},
+          "page": {"type": "integer", "minimum": 1},
+          "page_size": {"type": "integer", "minimum": 1, "maximum": 200}
+        },
+        "required": ["ticket_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_notifications",
+      "access": "read",
+      "description": "List the user's own notifications, newest first, with the unread count.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "page": {"type": "integer", "minimum": 1},
+          "page_size": {"type": "integer", "minimum": 1, "maximum": 200}
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_buildings",
+      "access": "read",
+      "description": "List the buildings (locations) the user may see, by name, to find a building id.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "search": {"type": "string", "description": "Text in name, address, city or postal code."},
+          "city": {"type": "string"},
+          "ordering": {"type": "string", "enum": ["name", "-name", "city", "-city", "created_at", "-created_at"]},
+          "page": {"type": "integer", "minimum": 1},
+          "page_size": {"type": "integer", "minimum": 1, "maximum": 200}
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_customers",
+      "access": "read",
+      "description": "List the customer organisations the user may see, with the ids of the buildings each is linked to.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "search": {"type": "string"},
+          "lifecycle": {"type": "string", "enum": ["PROSPECT", "ONBOARDING", "ACTIVE", "NOTICE", "CHURNED"]},
+          "ordering": {"type": "string", "enum": ["name", "-name", "created_at", "-created_at"]},
+          "page": {"type": "integer", "minimum": 1},
+          "page_size": {"type": "integer", "minimum": 1, "maximum": 200}
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_extra_work_requests",
+      "access": "read",
+      "description": "List the extra-work requests (meerwerk) the user may see, newest first. PRICING_PROPOSED means a price is waiting for the customer's decision.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "array", "items": {"type": "string", "enum": ["REQUESTED", "UNDER_REVIEW", "PRICING_PROPOSED", "CUSTOMER_APPROVED", "IN_PROGRESS", "COMPLETED", "CUSTOMER_REJECTED", "CANCELLED"]}},
+          "customer_id": {"type": "integer", "minimum": 1},
+          "building_id": {"type": "integer", "minimum": 1},
+          "routing_decision": {"type": "string", "enum": ["INSTANT", "PROPOSAL"]},
+          "request_intent": {"type": "array", "items": {"type": "string", "enum": ["DIRECT_AGREED_PRICE_ORDER", "AUTO_START_AFTER_PRICING", "REQUEST_QUOTE"]}},
+          "overdue": {"type": "boolean"},
+          "deadline_before": {"type": "string", "format": "date"},
+          "deadline_after": {"type": "string", "format": "date"},
+          "page": {"type": "integer", "minimum": 1},
+          "page_size": {"type": "integer", "minimum": 1, "maximum": 200}
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_extra_work_request",
+      "access": "read",
+      "description": "Get one extra-work request in full: lines, price, status and whether this user may approve or reject it now.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "extra_work_id": {"type": "integer", "minimum": 1}
+        },
+        "required": ["extra_work_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "list_invoices",
+      "access": "read",
+      "description": "List invoices. Provider managers see their company's invoices in every state; customer users see only invoices sent to their organisation.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "status": {"type": "string", "enum": ["DRAFT", "ISSUED", "SENT"], "description": "Provider users only."},
+          "customer_id": {"type": "integer", "minimum": 1, "description": "Provider users only."},
+          "building_id": {"type": "integer", "minimum": 1, "description": "Provider users only."},
+          "period_year": {"type": "integer", "minimum": 2000, "maximum": 2100},
+          "period_month": {"type": "integer", "minimum": 1, "maximum": 12},
+          "page": {"type": "integer", "minimum": 1},
+          "page_size": {"type": "integer", "minimum": 1, "maximum": 200}
+        },
+        "required": [],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "get_invoice",
+      "access": "read",
+      "description": "Get one invoice with its lines and totals.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "invoice_id": {"type": "integer", "minimum": 1, "description": "Numeric id from list_invoices, not the printed invoice number."}
+        },
+        "required": ["invoice_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "create_ticket",
+      "access": "write",
+      "description": "Create a new ticket for a customer at a building. It starts as OPEN.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "title": {"type": "string", "minLength": 1, "maxLength": 255},
+          "description": {"type": "string", "minLength": 1},
+          "building_id": {"type": "integer", "minimum": 1},
+          "customer_id": {"type": "integer", "minimum": 1, "description": "Must be linked to the building."},
+          "priority": {"type": "string", "enum": ["NORMAL", "HIGH", "URGENT"]},
+          "room_label": {"type": "string", "maxLength": 255, "description": "Room, floor or spot."},
+          "type": {"type": "string", "enum": ["REPORT", "COMPLAINT", "REQUEST", "SUGGESTION", "QUOTE_REQUEST", "OTHER"], "description": "Provider users only."},
+          "customer_wanted_date": {"type": "string", "format": "date"}
+        },
+        "required": ["title", "description", "building_id", "customer_id"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "add_ticket_message",
+      "access": "write",
+      "description": "Post a message on a ticket.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {"type": "integer", "minimum": 1},
+          "message": {"type": "string", "minLength": 1},
+          "message_type": {"type": "string", "enum": ["PUBLIC_REPLY", "INTERNAL_NOTE", "STAFF_OPERATIONAL", "STAFF_COMPLETION", "CUSTOMER_INTERNAL"], "description": "PUBLIC_REPLY: customer and provider managers see it. INTERNAL_NOTE: provider managers only. STAFF_OPERATIONAL: provider side incl. field staff. STAFF_COMPLETION: completion note, customer sees it too. CUSTOMER_INTERNAL: customer side only. Omit for the role's default."}
+        },
+        "required": ["ticket_id", "message"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "change_ticket_status",
+      "access": "write",
+      "description": "Move a ticket to a new status (start, hold, report done, approve, reject, close, reopen). Only moves allowed for the user's role succeed.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "ticket_id": {"type": "integer", "minimum": 1},
+          "to_status": {"type": "string", "enum": ["OPEN", "ACKNOWLEDGED", "IN_PROGRESS", "ON_HOLD", "WAITING_MANAGER_REVIEW", "WAITING_CUSTOMER_APPROVAL", "REJECTED", "APPROVED", "CLOSED", "REOPENED_BY_ADMIN"]},
+          "note": {"type": "string", "description": "Required when a customer rejects, when work is reported done, and when a manager sends work back."},
+          "override_reason": {"type": "string", "description": "Required when a provider user approves or rejects on the customer's behalf."}
+        },
+        "required": ["ticket_id", "to_status"],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "decide_extra_work",
+      "access": "write",
+      "description": "Approve or reject the price of an extra-work request that waits for the customer's decision. A provider user deciding for the customer must give a reason.",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "extra_work_id": {"type": "integer", "minimum": 1},
+          "decision": {"type": "string", "enum": ["approve", "reject"]},
+          "reason": {"type": "string", "description": "Required for a rejection, and always when a provider user decides."}
+        },
+        "required": ["extra_work_id", "decision"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
