@@ -669,3 +669,12 @@ def make_world(seed: int, family: str = "train", today: str = "2026-11-12") -> W
 TRAIN_SEEDS = list(range(1, 13))       # worlds used for training data
 VAL_SEEDS = [101, 102]                 # train family, separate seeds, for validation data
 TEST_SEEDS = [1, 2, 3]                 # test family (disjoint pools and id ranges)
+
+
+def world_for(family: str, seed: int) -> World:
+    """The world used for a given family/seed, each with its own 'today'."""
+    if family == "test":
+        today = dt.date(2026, 12, 7) + dt.timedelta(days=37 * seed)
+    else:
+        today = dt.date(2026, 2, 3) + dt.timedelta(days=23 * (seed % 100) + (seed // 100) * 11)
+    return make_world(seed, family, today.isoformat())
