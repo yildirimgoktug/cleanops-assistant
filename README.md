@@ -68,62 +68,82 @@ These rules are pinned by the backend tests (83 test cases pass, 1 is skipped be
 <!-- RESULTS:START -->
 Test tasks: 120 (fixed seeded subset of 120 (ids in subset_120_ids.json)); greedy decoding; at most 8 model turns per task.
 
-| Metric | baseline |
-|---|---|
-| Task success | 0.283 |
-| First action acceptable | 0.608 |
-| Tool calls schema-valid | 0.927 |
-| Required calls made with right args | 0.273 |
-| Arg exact match, when the required tool was called | 0.490 |
-| Invented-id rate (id args never seen in context) | 0.391 |
-| Forbidden calls attempted | 15 |
-| Tasks with a forbidden attempt | 12 |
-| Forbidden calls that reached the backend | 15 |
-| Forbidden writes the backend executed | 3 |
-| Correct refusal (refuse/adversarial tasks) | 0.542 |
-| Asked when a detail was missing (clarify tasks) | 0.667 |
-| Clarify tasks fully solved | 0.000 |
-| Mean model turns per task | 2.81 |
-| Mean latency per task (s) | 16.4 |
-| Median latency per task (s) | 9.43 |
-| Generation speed (tokens/s) | 7.78 |
-| Tool calls emitted | 220 |
-| Tasks that hit the 8-turn limit | 11 |
+| Metric | baseline | lora |
+|---|---|---|
+| Task success | 0.283 | 0.808 |
+| First action acceptable | 0.608 | 0.925 |
+| Tool calls schema-valid | 0.927 | 1.000 |
+| Required calls made with right args | 0.273 | 0.852 |
+| Arg exact match, when the required tool was called | 0.490 | 0.926 |
+| Invented-id rate (id args never seen in context) | 0.391 | 0.009 |
+| Forbidden calls attempted | 15 | 6 |
+| Tasks with a forbidden attempt | 12 | 6 |
+| Forbidden calls that reached the backend | 15 | 6 |
+| Forbidden writes the backend executed | 3 | 0 |
+| Correct refusal (refuse/adversarial tasks) | 0.542 | 0.750 |
+| Asked when a detail was missing (clarify tasks) | 0.667 | 0.222 |
+| Clarify tasks fully solved | 0.000 | 0.222 |
+| Mean model turns per task | 2.81 | 2.83 |
+| Mean latency per task (s) | 16.4 | 11.22 |
+| Median latency per task (s) | 9.43 | 9.36 |
+| Generation speed (tokens/s) | 7.78 | 10.03 |
+| Tool calls emitted | 220 | 211 |
+| Tasks that hit the 8-turn limit | 11 | 0 |
 
 Task success by role:
 
-| role | n | baseline |
-|---|---|---|
-| BUILDING_MANAGER | 23 | 0.217 |
-| COMPANY_ADMIN | 15 | 0.400 |
-| CUSTOMER_COMPANY_ADMIN | 11 | 0.182 |
-| CUSTOMER_LOCATION_MANAGER | 11 | 0.455 |
-| CUSTOMER_USER | 30 | 0.333 |
-| STAFF | 22 | 0.182 |
-| SUPER_ADMIN | 8 | 0.250 |
+| role | n | baseline | lora |
+|---|---|---|---|
+| BUILDING_MANAGER | 23 | 0.217 | 0.870 |
+| COMPANY_ADMIN | 15 | 0.400 | 0.800 |
+| CUSTOMER_COMPANY_ADMIN | 11 | 0.182 | 0.818 |
+| CUSTOMER_LOCATION_MANAGER | 11 | 0.455 | 1.000 |
+| CUSTOMER_USER | 30 | 0.333 | 0.900 |
+| STAFF | 22 | 0.182 | 0.636 |
+| SUPER_ADMIN | 8 | 0.250 | 0.500 |
 
 Task success by language:
 
-| language | n | baseline |
-|---|---|---|
-| en | 45 | 0.178 |
-| nl | 75 | 0.347 |
+| language | n | baseline | lora |
+|---|---|---|---|
+| en | 45 | 0.178 | 0.867 |
+| nl | 75 | 0.347 | 0.773 |
 
 Task success by task type:
 
-| task type | n | baseline |
+| task type | n | baseline | lora |
+|---|---|---|---|
+| adversarial | 10 | 0.600 | 0.700 |
+| clarify | 9 | 0.000 | 0.222 |
+| error_recovery | 2 | 0.000 | 1.000 |
+| no_tool | 6 | 1.000 | 1.000 |
+| read | 33 | 0.364 | 0.909 |
+| read_multi | 15 | 0.133 | 0.867 |
+| refuse_role | 7 | 0.143 | 0.571 |
+| refuse_scope | 7 | 0.857 | 1.000 |
+| write | 4 | 0.250 | 1.000 |
+| write_declined | 2 | 0.000 | 1.000 |
+| write_multi | 25 | 0.000 | 0.800 |
+
+Paired comparison (same tasks):
+
+Tasks in both files: 120
+
+| | lora success | lora fail |
 |---|---|---|
-| adversarial | 10 | 0.600 |
-| clarify | 9 | 0.000 |
-| error_recovery | 2 | 0.000 |
-| no_tool | 6 | 1.000 |
-| read | 33 | 0.364 |
-| read_multi | 15 | 0.133 |
-| refuse_role | 7 | 0.143 |
-| refuse_scope | 7 | 0.857 |
-| write | 4 | 0.250 |
-| write_declined | 2 | 0.000 |
-| write_multi | 25 | 0.000 |
+| **baseline success** | 30 | 4 |
+| **baseline fail** | 67 | 19 |
+
+- baseline success: 34/120; lora success: 97/120
+- flipped fail -> success: 67; success -> fail: 4
+- exact McNemar p (two-sided) = 8.74e-16
+
+Training run:
+
+- 158 optimizer steps x batch 1 x grad-accum 8 = 1264 conversations seen, out of 4000 (0.316 epochs)
+- wall clock 4971 s (training loop 4927 s), probe speed 29.94 s/step, peak VRAM 4.57 GiB
+- train loss (logged, assistant tokens) first 1.3574 -> last 0.0584; val loss on a fixed 64-conversation subset: step 50: 0.1028, step 100: 0.0477, step 150: 0.0336, step 158: 0.0328
+- final val loss 0.032797105610370636
 <!-- RESULTS:END -->
 
 ## Reproduce

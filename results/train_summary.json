@@ -1,0 +1,67 @@
+{
+ "model": "Qwen/Qwen3-1.7B",
+ "adapter_dir": "outputs\\lora_v1",
+ "lora": {
+  "r": 16,
+  "alpha": 32,
+  "dropout": 0.05,
+  "target_modules": [
+   "down_proj",
+   "gate_proj",
+   "k_proj",
+   "o_proj",
+   "q_proj",
+   "up_proj",
+   "v_proj"
+  ]
+ },
+ "optimizer_steps": 158,
+ "grad_accum": 8,
+ "batch_size": 1,
+ "examples_seen": 1264,
+ "train_examples_available": 4000,
+ "epochs": 0.316,
+ "lr": 0.0002,
+ "schedule": "linear with warmup, re-targeted by the time box",
+ "warmup_steps": 7,
+ "scheduled_total_steps": 158,
+ "max_len": 3456,
+ "seed": 42,
+ "time_budget_min": 90.0,
+ "s_per_step_probe": 29.94,
+ "wall_clock_s": 4971,
+ "segments": 1,
+ "wall_clock_note": "budget used across segments, counted up to each segment's last checkpoint for interrupted segments",
+ "last_segment_wall_s": 4971,
+ "train_runtime_s": 4927,
+ "first_train_loss": 1.3574,
+ "final_train_loss": 0.0584,
+ "final_val_loss": 0.032797105610370636,
+ "val_subset_n": 64,
+ "eval_history": [
+  {
+   "step": 50,
+   "eval_loss": 0.10282158851623535
+  },
+  {
+   "step": 100,
+   "eval_loss": 0.04774906486272812
+  },
+  {
+   "step": 150,
+   "eval_loss": 0.03359261155128479
+  },
+  {
+   "step": 158,
+   "eval_loss": 0.032797105610370636
+  }
+ ],
+ "peak_vram_gib": 4.57,
+ "peak_vram_note": "last segment",
+ "versions": {
+  "torch": "2.9.1+cu128",
+  "transformers": "4.57.1",
+  "trl": "0.24.0",
+  "peft": "0.16.0"
+ }
+}
