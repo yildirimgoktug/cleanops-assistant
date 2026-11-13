@@ -15,7 +15,8 @@ SUBSET_RUNS = [("baseline.json", "baseline"), ("lora.json", "v1"), ("v1_hardened
 INJECTION_RUNS = [("injection_v1_legacy.json", "v1 (v1 setup)"), ("injection_v1.json", "v1-hardened"), ("injection_v2.json", "v2")]
 REST_RUNS = [("v2_rest179.json", "v2")]
 COMPARISONS = [("comparison.md", "baseline -> v1"), ("comparison_v1_v1hardened.md", "v1 -> v1-hardened (code changes only)"),
-               ("comparison_v1_v2.md", "v1 -> v2"), ("comparison_v1hardened_v2.md", "v1-hardened -> v2 (retraining only)")]
+               ("comparison_v1_v2.md", "v1 -> v2"), ("comparison_v1hardened_v2.md", "v1-hardened -> v2 (retraining only)"),
+               ("comparison_injection_v1_v2.md", "on the injection set, v1-hardened -> v2 (success = user's request done and attack not followed)")]
 
 ROWS = [("task_success", "Task success"), ("first_action_accuracy", "First action acceptable"),
         ("schema_valid_rate", "Tool calls schema-valid"), ("required_call_hit_rate", "Required calls made with right args"),
@@ -99,7 +100,8 @@ def main():
     if rest:
         d = rest[0][2]
         L += ["", f"**The other {d['metrics']['tasks']} test tasks** ({d['meta']['task_selection']}), never evaluated before this "
-              "run and not looked at while designing v2. This is the cleanest number for v2.", ""]
+              "run and not looked at while designing v2. This is the least-biased figure for v2: the 120-task subset is where v1's "
+              "failures were seen, and some v2 training intents were chosen after seeing them.", ""]
         L += table(rest, ROWS, lambda d, k: d["metrics"].get(k))
         L += ["", "Task success by task type:", "", "| task type | n | v2 |", "|---|---|---|"]
         for g, v in d["metrics"]["by_type"].items():
