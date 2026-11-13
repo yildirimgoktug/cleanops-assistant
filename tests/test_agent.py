@@ -63,6 +63,7 @@ def test_tool_layer_validates_and_confirms():
     assert not layer.execute(u.id, "list_tickets", {"date_from": "gisteren"})["valid"]
     assert not layer.execute(u.id, "nope", {})["valid"]
     t = w.tickets[0]
+    layer.observe(f'{{"id":{t.id}}}')  # a write may only use an id that was shown earlier
     rec = layer.execute(u.id, "add_ticket_message", {"ticket_id": t.id, "message": "x"}, confirm=lambda n, a: False)
     assert rec["confirmed"] is False and not rec["executed"] and rec["result"]["status"] == "cancelled"
 

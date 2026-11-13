@@ -1,0 +1,47 @@
+{
+ "v1_all_roles_tool_tokens": 2220,
+ "per_role": {
+  "SUPER_ADMIN": {
+   "tools": 16,
+   "tool_tokens": 2154,
+   "first_prompt_v1_mean": 2496,
+   "first_prompt_hardened_mean": 2552
+  },
+  "COMPANY_ADMIN": {
+   "tools": 16,
+   "tool_tokens": 2151,
+   "first_prompt_v1_mean": 2508,
+   "first_prompt_hardened_mean": 2561
+  },
+  "BUILDING_MANAGER": {
+   "tools": 16,
+   "tool_tokens": 2161,
+   "first_prompt_v1_mean": 2542,
+   "first_prompt_hardened_mean": 2605
+  },
+  "STAFF": {
+   "tools": 9,
+   "tool_tokens": 1189,
+   "first_prompt_v1_mean": 2542,
+   "first_prompt_hardened_mean": 1634
+  },
+  "CUSTOMER_USER": {
+   "tools": 15,
+   "tool_tokens": 1848,
+   "first_prompt_v1_mean": 2528,
+   "first_prompt_hardened_mean": 2278
+  },
+  "CUSTOMER_LOCATION_MANAGER": {
+   "tools": 15,
+   "tool_tokens": 1848,
+   "first_prompt_v1_mean": 2538,
+   "first_prompt_hardened_mean": 2288
+  },
+  "CUSTOMER_COMPANY_ADMIN": {
+   "tools": 15,
+   "tool_tokens": 1848,
+   "first_prompt_v1_mean": 2540,
+   "first_prompt_hardened_mean": 2290
+  }
+ }
+}

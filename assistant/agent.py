@@ -31,7 +31,9 @@ from typing import Callable, Optional
 
 import jsonschema
 
-from .backend import Backend, WRITE_TOOLS, is_error
+from .backend import ALL_TOOLS, Backend, WRITE_TOOLS, is_error
+from .security import (AuditLog, DATA_RULE, IDENTITY_RULE, MAX_WRITES_PER_CONVERSATION, ROLE_TOOLS, neutralise,
+                       neutralise_obj, role_tool_spec, unseen_ids, wrap_data)
 from .world import ROLE_LABEL
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -54,11 +56,12 @@ def load_tools(path=TOOLS_PATH) -> dict:
     return json.loads(pathlib.Path(path).read_text(encoding="utf-8"))
 
 
-def prompt_tools(spec: Optional[dict] = None) -> list:
-    """The tool definitions as they are passed to the chat template (`tools=`)."""
+def prompt_tools(spec: Optional[dict] = None, role: Optional[str] = None) -> list:
+    """The tool definitions as they are passed to the chat template (`tools=`).
+    With a role: only that role's tools, narrowed to the role (hardened mode); without: all 16 (v1)."""
     spec = spec or load_tools()
     out = []
-    for t in spec["tools"]:
+    for t in (spec["tools"] if role is None else role_tool_spec(spec, role)):
         p = copy.deepcopy(t["parameters"])
         for k in list(p["properties"]):
             if k in PROMPT_DROP:
@@ -73,7 +76,10 @@ def prompt_tools(spec: Optional[dict] = None) -> list:
     return out
 
 
-def system_prompt(ctx: dict, today: str) -> str:
+def system_prompt(ctx: dict, today: str, hardened: bool = True) -> str:
+    """hardened=False reproduces the v1 prompt; hardened=True neutralises names and adds the data/identity rules."""
+    if hardened:
+        ctx = neutralise_obj(ctx)
     role = ROLE_LABEL[ctx["role"]]
     lines = [f"You are the CleanOps assistant of a facility-services platform. Today is {today}.",
              f"Signed-in user: {ctx['name']} (user id {ctx['user_id']}), role: {role}."]
@@ -93,8 +99,10 @@ def system_prompt(ctx: dict, today: str) -> str:
         "- Look before you change: read a ticket before changing its status and only use a status from its allowed_next_statuses; read an extra-work request before deciding on it.",
         "- Write tools (create_ticket, add_ticket_message, change_ticket_status, decide_extra_work) are shown to the user by the app for confirmation; do not ask for confirmation yourself. If a required detail is missing or unclear, ask one short question instead of guessing.",
         "- If the request is outside this user's rights, do not call a write tool; say politely that their role cannot do this and who can. If something is not found, say so; do not guess.",
-        "- Reply briefly, in the user's language (Dutch or English).",
     ]
+    if hardened:
+        lines += [DATA_RULE, IDENTITY_RULE]
+    lines.append("- Reply briefly, in the user's language (Dutch or English).")
     return "\n".join(lines)
 
 
@@ -105,46 +113,129 @@ _DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class ToolLayer:
-    """Validates, confirms (for writes), executes and trims tool calls."""
+    """Validates, confirms (for writes), executes and trims tool calls, as the signed-in user.
 
-    def __init__(self, backend: Backend, spec: Optional[dict] = None):
+    hardened=True (default) adds the structural controls of assistant/security.py, in this order:
+    role tool list -> role-narrowed JSON schema -> (writes) ids must have appeared earlier in the
+    conversation -> (writes) per-conversation cap -> (writes) user confirmation -> backend. Every call
+    gets an audit line. hardened=False reproduces v1 (full schema, no id check, no cap, no wrapping).
+    """
+
+    def __init__(self, backend: Backend, spec: Optional[dict] = None, hardened: bool = True,
+                 audit: Optional[AuditLog] = None, max_writes: int = MAX_WRITES_PER_CONVERSATION):
         self.backend = backend
         self.spec = spec or load_tools()
-        self.schemas = {t["name"]: t["parameters"] for t in self.spec["tools"]}
+        self.hardened = hardened
+        self.full_schemas = {t["name"]: t["parameters"] for t in self.spec["tools"]}
+        self.schemas = self.full_schemas
+        self.audit = audit if audit is not None else AuditLog()
+        self.max_writes = max_writes
+        self.writes = 0
+        self.seen = ""
+        self._role = {}
 
-    def validate(self, name: str, args) -> Optional[str]:
-        if name not in self.schemas:
+    # context -----------------------------------------------------------
+    def role_of(self, user_id: int) -> str:
+        if user_id not in self._role:
+            self._role[user_id] = self.backend.user_context(user_id)["role"]
+        return self._role[user_id]
+
+    def schemas_for(self, user_id: int) -> dict:
+        if not self.hardened:
+            return self.full_schemas
+        return {t["name"]: t["parameters"] for t in role_tool_spec(self.spec, self.role_of(user_id))}
+
+    def prompt_tools_for(self, user_id: int) -> list:
+        return prompt_tools(self.spec, self.role_of(user_id) if self.hardened else None)
+
+    def observe(self, text: str):
+        """Everything the model has been shown (system prompt, user turns, tool results); ids of write calls must occur here."""
+        self.seen += "\n" + text
+
+    def clean_user_text(self, text: str) -> str:
+        return neutralise(text) if self.hardened else text
+
+    def result_text(self, name, result) -> str:
+        """A tool result as it goes into the model's context (same in training and inference)."""
+        if not self.hardened:
+            return dump(compact(name, result))
+        tool = name if name in ALL_TOOLS else "unknown"
+        return wrap_data(tool, dump(neutralise_obj(compact(name, result))))
+
+    # validation ----------------------------------------------------------
+    def validate(self, name: str, args, schemas: Optional[dict] = None) -> Optional[str]:
+        schemas = schemas or self.schemas
+        if name not in schemas:
             return f"unknown tool '{name}'"
         if not isinstance(args, dict):
             return "arguments must be a JSON object"
         try:
-            jsonschema.validate(args, self.schemas[name])
+            jsonschema.validate(args, schemas[name])
         except jsonschema.ValidationError as e:
             return e.message
-        props = self.schemas[name]["properties"]
+        props = schemas[name]["properties"]
         for k, v in args.items():
             if props.get(k, {}).get("format") == "date" and not (isinstance(v, str) and _DATE.match(v)):
                 return f"{k} must be a date YYYY-MM-DD"
         return None
 
+    @staticmethod
+    def _blocked(rec, by, status, code, detail):
+        rec.update(blocked_by=by, result={"error": {"status": status, "code": code, "detail": detail}})
+        if by in ("schema", "unknown_tool"):
+            rec.update(valid=False, schema_error=detail)
+
     def execute(self, user_id: int, name: str, args: dict, confirm: Optional[Callable] = None) -> dict:
-        """Returns a record: {name, args, valid, error, confirmed, executed, result}."""
+        """Returns a record: {name, args, valid, schema_error, write, blocked_by, confirmed, executed, result}."""
         rec = {"name": name, "args": args, "valid": True, "schema_error": None, "write": name in WRITE_TOOLS,
-               "confirmed": None, "executed": False, "result": None}
-        problem = self.validate(name, args)
-        if problem:
-            rec.update(valid=False, schema_error=problem,
-                       result={"error": {"status": 400, "code": "invalid_arguments", "detail": problem}})
-            return rec
+               "blocked_by": None, "confirmed": None, "executed": False, "result": None}
+        self._decide(rec, user_id, name, args, confirm)
+        res = rec["result"]
+        decision = (f"blocked:{rec['blocked_by']}" if rec["blocked_by"] else
+                    "invalid_arguments" if not rec["valid"] else
+                    "cancelled_by_user" if rec["confirmed"] is False else
+                    f"backend_error:{res['error']['code']}" if is_error(res) else "ok")
+        try:
+            role = self.role_of(user_id)
+        except Exception:
+            role = None
+        self.audit.write(user_id=user_id, role=role, tool=name, args=args, write=rec["write"], decision=decision)
+        return rec
+
+    def _decide(self, rec, user_id, name, args, confirm):
+        if not self.hardened:
+            problem = self.validate(name, args)
+            if problem:
+                rec.update(valid=False, schema_error=problem,
+                           result={"error": {"status": 400, "code": "invalid_arguments", "detail": problem}})
+                return
+        else:
+            if name not in ALL_TOOLS:
+                return self._blocked(rec, "unknown_tool", 400, "unknown_tool", f"unknown tool '{name}'")
+            if name not in ROLE_TOOLS[self.role_of(user_id)]:
+                return self._blocked(rec, "role_filter", 403, "tool_not_available",
+                                     f"The tool {name} is not available for this user's role.")
+            problem = self.validate(name, args, self.schemas_for(user_id))
+            if problem:
+                return self._blocked(rec, "schema", 400, "invalid_arguments", problem)
+            if name in WRITE_TOOLS:
+                bad = unseen_ids(args, self.seen)
+                if bad:
+                    return self._blocked(rec, "unseen_id", 400, "unknown_id",
+                                         f"Id {bad[0]} did not appear in this conversation; look it up first.")
+                if self.writes >= self.max_writes:
+                    return self._blocked(rec, "write_cap", 429, "write_limit_reached",
+                                         f"At most {self.max_writes} changes per conversation; start a new one.")
         if name in WRITE_TOOLS:
+            if self.hardened:
+                self.writes += 1  # counted when proposed to the user, confirmed or not
             ok = True if confirm is None else bool(confirm(name, args))
             rec["confirmed"] = ok
             if not ok:
                 rec["result"] = {"status": "cancelled", "detail": "The user did not confirm. Nothing was changed."}
-                return rec
+                return
         rec["result"] = self.backend.call(user_id, name, args)
         rec["executed"] = True
-        return rec
 
 
 def compact(name: str, result: dict) -> dict:
@@ -200,19 +291,19 @@ class Renderer:
     def enc(self, s: str) -> list:
         return self.tok(s, add_special_tokens=False)["input_ids"]
 
-    def prefix(self, system: str, user: str) -> list:
+    def prefix(self, system: str, user: str, tools: Optional[list] = None) -> list:
         ids = self.tok.apply_chat_template([{"role": "system", "content": system}, {"role": "user", "content": user}],
-                                           tools=self.tools, add_generation_prompt=True, enable_thinking=False,
-                                           tokenize=True)
+                                           tools=self.tools if tools is None else tools, add_generation_prompt=True,
+                                           enable_thinking=False, tokenize=True)
         if isinstance(ids, dict):
             ids = ids["input_ids"]
         return list(ids)
 
-    def encode_conversation(self, messages: list):
+    def encode_conversation(self, messages: list, tools: Optional[list] = None):
         """messages in chat format (system, user, assistant[tool_calls], tool, ...). Returns (ids, mask)
         with mask=1 on the tokens the assistant produces (its text, tool calls and <|im_end|>)."""
         assert messages[0]["role"] == "system" and messages[1]["role"] == "user"
-        ids = self.prefix(messages[0]["content"], messages[1]["content"])
+        ids = self.prefix(messages[0]["content"], messages[1]["content"], tools)
         mask = [0] * len(ids)
         i = 2
         while i < len(messages):
@@ -348,6 +439,7 @@ class RunTrace:
     steps: int = 0
     stopped: str = ""
     prompt_tokens_last: int = 0
+    audit: list = field(default_factory=list)
 
 
 def run_agent(model: HFModel, renderer: Renderer, layer: ToolLayer, user_id: int, system: str, user_turns: list,
@@ -355,11 +447,12 @@ def run_agent(model: HFModel, renderer: Renderer, layer: ToolLayer, user_id: int
     tr = RunTrace()
     if hasattr(model, "reset"):
         model.reset()
-    pending = list(user_turns)
+    pending = [layer.clean_user_text(u) for u in user_turns]
     first = pending.pop(0)
     tr.users.append(first)
-    ids = renderer.prefix(system, first)
+    ids = renderer.prefix(system, first, layer.prompt_tools_for(user_id) if layer.hardened else None)
     seen = system + "\n" + first   # everything the model has been shown, to detect invented ids
+    layer.observe(seen)
     for _ in range(max_steps):
         new, secs = model.generate(ids, max_new_tokens)
         tr.steps += 1
@@ -379,19 +472,22 @@ def run_agent(model: HFModel, renderer: Renderer, layer: ToolLayer, user_id: int
                 rec = layer.execute(user_id, c["name"], c["arguments"], confirm)
                 rec["id_args"], rec["invented_ids"] = id_check(c["arguments"], seen)
                 tr.calls.append(rec)
-                results.append(dump(compact(c["name"], rec["result"])))
+                results.append(layer.result_text(c["name"], rec["result"]))
             for _e in errors:
                 tr.calls.append({"name": None, "args": None, "valid": False, "schema_error": "unparseable tool call",
-                                 "write": False, "confirmed": None, "executed": False, "result": None})
-                results.append(dump({"error": {"status": 400, "code": "invalid_tool_call",
-                                               "detail": "The tool call was not valid JSON."}}))
+                                 "write": False, "blocked_by": "unparseable", "confirmed": None, "executed": False,
+                                 "result": None})
+                results.append(layer.result_text("invalid", {"error": {"status": 400, "code": "invalid_tool_call",
+                                                                       "detail": "The tool call was not valid JSON."}}))
             ids = ids + renderer.enc(tool_block(results))
             seen += "\n" + "\n".join(results)
+            layer.observe("\n".join(results))
             continue
         if pending:
             nxt = pending.pop(0)
             tr.users.append(nxt)
             seen += "\n" + nxt
+            layer.observe(nxt)
             ids = ids + renderer.enc(user_block(nxt))
             continue
         tr.stopped = "final_answer"
@@ -399,4 +495,5 @@ def run_agent(model: HFModel, renderer: Renderer, layer: ToolLayer, user_id: int
     else:
         tr.stopped = "max_steps"
     tr.prompt_tokens_last = len(ids)
+    tr.audit = list(layer.audit.rows)
     return tr
