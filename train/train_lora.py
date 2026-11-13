@@ -26,7 +26,10 @@ fixes the final number of steps so the whole run (including periodic evals and
 saving) ends within the budget; the linear LR schedule is re-targeted to that
 total at that point. `--max-steps N` instead fixes the number of steps up front.
 
-  python train/train_lora.py --time-budget-min 90
+  python train/train_lora.py --time-budget-min 120 --save-steps 20            # v2 -> outputs/lora_v2
+  # how v1 was trained (v1 data: data/generate.py --format v1, kept in data/generated/v1/):
+  python train/train_lora.py --out outputs/lora_v1 --data-dir data/generated/v1 --log logs/train_log.jsonl
+      --summary results/train_summary.json --time-budget-min 90 --save-steps 8
 """
 from __future__ import annotations
 
@@ -51,9 +54,15 @@ from peft import LoraConfig  # noqa: E402
 from transformers import AutoModelForCausalLM, AutoTokenizer, TrainerCallback, set_seed  # noqa: E402
 from trl import SFTConfig, SFTTrainer  # noqa: E402
 
-from assistant.agent import Renderer  # noqa: E402
+from assistant.agent import Renderer, load_tools, prompt_tools  # noqa: E402
 
 MODEL = "Qwen/Qwen3-1.7B"
+SPEC = load_tools()
+
+
+def row_tools(x):
+    """v2 rows are rendered with the role-filtered tools of the hardened format; v1 rows with all 16."""
+    return prompt_tools(SPEC, x["role"]) if x.get("format") == "v2" else None
 
 
 def load(path, renderer, max_len, limit=None):
@@ -61,7 +70,7 @@ def load(path, renderer, max_len, limit=None):
     with open(path, encoding="utf-8") as f:
         for line in f:
             x = json.loads(line)
-            ids, mask = renderer.encode_conversation(x["messages"])
+            ids, mask = renderer.encode_conversation(x["messages"], row_tools(x))
             if len(ids) > max_len:
                 dropped += 1
                 continue
@@ -193,7 +202,7 @@ class TimeBox(TrainerCallback):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--data-dir", default=str(ROOT / "data" / "generated"))
-    ap.add_argument("--out", default=str(ROOT / "outputs" / "lora_v1"))
+    ap.add_argument("--out", default=str(ROOT / "outputs" / "lora_v2"))
     ap.add_argument("--max-len", type=int, default=3456)
     ap.add_argument("--max-steps", type=int, default=0, help="fixed number of optimizer steps (disables the time box)")
     ap.add_argument("--epochs", type=float, default=0, help="alternative to --max-steps")
@@ -205,7 +214,8 @@ def main():
     ap.add_argument("--lr", type=float, default=2e-4)
     ap.add_argument("--ga", type=int, default=8)
     ap.add_argument("--seed", type=int, default=42)
-    ap.add_argument("--log", default=str(ROOT / "logs" / "train_log.jsonl"))
+    ap.add_argument("--log", default=str(ROOT / "logs" / "train_v2_log.jsonl"))
+    ap.add_argument("--summary", default=str(ROOT / "results" / "train_summary_v2.json"))
     ap.add_argument("--save-steps", type=int, default=8,
                     help="checkpoint (adapter + optimizer) every N optimizer steps; the run resumes from the latest one")
     a = ap.parse_args()
@@ -286,7 +296,7 @@ def main():
                      "trl": __import__("trl").__version__, "peft": __import__("peft").__version__},
     }
     (ROOT / "results").mkdir(exist_ok=True)
-    (ROOT / "results" / "train_summary.json").write_text(json.dumps(summary, indent=1), encoding="utf-8")
+    pathlib.Path(a.summary).write_text(json.dumps(summary, indent=1), encoding="utf-8")
     tb.write({"event": "done", **summary})
 
 

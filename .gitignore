@@ -13,3 +13,4 @@ logs/
 data/raw/
 data/generated/*.jsonl
 !data/generated/sample_*.jsonl
+data/generated/*/
