@@ -1107,6 +1107,28 @@ def generate(n, seeds, seed, tag):
     return out, rejects, attempts
 
 
+def sample_per_intent(k, seed=3):
+    """k examples of every intent (for overlap tests), from the training worlds."""
+    rng = random.Random(f"sample-{seed}")
+    worlds = [world_for("train", s) for s in TRAIN_SEEDS]
+    out = []
+    for name, (fn, cat, _w) in INTENTS.items():
+        got = 0
+        for _ in range(400):
+            if got >= k:
+                break
+            W = rng.choice(worlds)
+            user = rng.choice(W.users)
+            c = Conv(W, user, "nl" if rng.random() < 0.5 else "en", rng)
+            try:
+                fn(c)
+            except Reject:
+                continue
+            out.append({"intent": name, "messages": c.msgs})
+            got += 1
+    return out
+
+
 def length_stats(rows, tok):
     from assistant.agent import Renderer
     r = Renderer(tok)
