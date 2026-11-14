@@ -417,6 +417,61 @@ class HFModel:
         self._cache, self._cache_ids = None, None
 
 
+class OpenAICompatModel:
+    """Greedy generation through an OpenAI-compatible `/v1/completions` endpoint (e.g. llama.cpp's llama-server
+    serving a GGUF). Same interface as HFModel, so `run_agent` and the evaluation are unchanged: the prompt is the
+    same list of token ids the in-process model gets (the server accepts a token-id array and does not apply any
+    chat template), the reply is streamed so the time to the first token can be measured, and the reply text is
+    re-encoded to token ids for the next turn. Needs the `requests` package."""
+
+    def __init__(self, base_url: str, tokenizer_name: str = "Qwen/Qwen3-1.7B", model: str = "cleanops-assistant",
+                 timeout: float = 300.0):
+        import requests
+        from transformers import AutoTokenizer
+        self.requests = requests
+        self.url = base_url.rstrip("/") + "/v1/completions"
+        self.model_name = model
+        self.timeout = timeout
+        self.tok = AutoTokenizer.from_pretrained(tokenizer_name)
+        self.eos = [self.tok.convert_tokens_to_ids(IM_END), self.tok.eos_token_id]
+        self.ttft = []           # seconds from sending the request to the first generated piece, per model call
+        self.server_timings = []  # llama-server's own `timings` object of each call, when it sends one
+
+    def generate(self, ids: list, max_new_tokens: int = 300):
+        t0 = time.time()
+        body = {"model": self.model_name, "prompt": list(ids), "max_tokens": max_new_tokens, "temperature": 0,
+                "stream": True, "cache_prompt": True}
+        text, finish, first = "", None, None
+        with self.requests.post(self.url, json=body, stream=True, timeout=self.timeout) as r:
+            r.raise_for_status()
+            for line in r.iter_lines(decode_unicode=True):
+                if not line or not line.startswith("data:"):
+                    continue
+                payload = line[5:].strip()
+                if payload == "[DONE]":
+                    break
+                ev = json.loads(payload)
+                if ev.get("timings"):
+                    self.server_timings.append(ev["timings"])
+                for ch in ev.get("choices", []):
+                    if ch.get("text"):
+                        if first is None:
+                            first = time.time() - t0
+                        text += ch["text"]
+                    finish = ch.get("finish_reason") or finish
+        self.ttft.append(first if first is not None else time.time() - t0)
+        new = self.enc(text)
+        if finish == "stop":      # the model ended its turn (<|im_end|> is not part of the returned text)
+            new = new + [self.eos[0]]
+        return new, time.time() - t0
+
+    def enc(self, s: str) -> list:
+        return self.tok(s, add_special_tokens=False)["input_ids"]
+
+    def reset(self):
+        pass
+
+
 def id_check(args, seen: str):
     """Integer arguments named *_id whose value never appeared in the context so far count as invented."""
     id_args, invented = [], []

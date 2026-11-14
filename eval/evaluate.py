@@ -27,7 +27,7 @@ os.environ.setdefault("HF_HUB_OFFLINE", "1")
 ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from assistant.agent import HFModel, Renderer, ToolLayer, run_agent, system_prompt  # noqa: E402
+from assistant.agent import HFModel, OpenAICompatModel, Renderer, ToolLayer, run_agent, system_prompt  # noqa: E402
 from assistant.backend import MockBackend, READ_TOOLS, WRITE_TOOLS, is_error  # noqa: E402
 from assistant.security import AuditLog  # noqa: E402
 from assistant.world import apply_plants, world_for  # noqa: E402
@@ -337,6 +337,9 @@ def main():
     ap.add_argument("--subset", type=int, default=0)
     ap.add_argument("--exclude-subset", type=int, default=0, help="run the tasks NOT in the fixed subset of this size")
     ap.add_argument("--tasks", default=str(TASKS), help="task file (default: the 299-task test set)")
+    ap.add_argument("--endpoint", default=None, help="OpenAI-compatible server (e.g. http://127.0.0.1:8080) serving the model "
+                    "instead of loading it in-process; --model is then only the tokenizer, --adapter must not be set")
+    ap.add_argument("--endpoint-model", default="cleanops-assistant", help="model name sent to the endpoint")
     ap.add_argument("--legacy", action="store_true", help="v1 setup: all tools, no data blocks, no write id check / cap")
     ap.add_argument("--limit", type=int, default=0, help="debug: only the first N tasks")
     ap.add_argument("--max-steps", type=int, default=8)
@@ -351,7 +354,12 @@ def main():
     selection = f"{pathlib.Path(a.tasks).name}: {selection}"
     if a.limit:
         tasks = tasks[:a.limit]
-    model = HFModel(a.model, a.adapter)
+    if a.endpoint:
+        if a.adapter:
+            ap.error("--endpoint serves a merged model; do not combine it with --adapter")
+        model = OpenAICompatModel(a.endpoint, a.model, a.endpoint_model)
+    else:
+        model = HFModel(a.model, a.adapter)
     renderer = Renderer(model.tok)  # tools per task come from the tool layer (role-filtered when hardened)
     worlds = {}
     rows = []
@@ -397,6 +405,18 @@ def main():
             "setup": "legacy (v1)" if a.legacy else "hardened",
             "finished": time.strftime("%Y-%m-%d %H:%M:%S"), "wall_s": time.time() - t_all, "decoding": "greedy",
             "max_steps": a.max_steps, "max_new_tokens": a.max_new_tokens}
+    if a.endpoint:
+        meta["endpoint"] = a.endpoint
+        if model.ttft:
+            meta["ttft_s_mean"] = round(statistics.mean(model.ttft), 3)
+            meta["ttft_s_median"] = round(statistics.median(model.ttft), 3)
+            meta["ttft_s_p90"] = round(sorted(model.ttft)[int(0.9 * (len(model.ttft) - 1))], 3)
+        tm = [t for t in model.server_timings if t.get("predicted_n", 0) >= 8]
+        if tm:
+            meta["server_decode_tok_s_mean"] = round(statistics.mean(t["predicted_per_second"] for t in tm), 2)
+            pf = [t["prompt_per_second"] for t in model.server_timings if t.get("prompt_n", 0) >= 256]
+            if pf:
+                meta["server_prefill_tok_s_mean"] = round(statistics.mean(pf), 2)
     RESULTS.mkdir(exist_ok=True)
     (RESULTS / f"{a.name}.json").write_text(json.dumps({"meta": meta, "metrics": agg, "tasks": rows}, ensure_ascii=False, indent=1),
                                            encoding="utf-8")
