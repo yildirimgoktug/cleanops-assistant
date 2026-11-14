@@ -353,6 +353,32 @@ Mean latency and tokens/s differ between runs (v2: 11.6 s and 9.9 tokens/s on th
 - The v1 and v2 validation losses come from different validation sets and formats, so they cannot be compared.
 - Not done: shortening the tool descriptions, a second seed, an evaluation of v1 or the baseline on the 179 tasks, and any run against the real backend.
 
+## Serving the v2 model as a GGUF (llama.cpp), measured on one laptop
+
+The v2 adapter was merged into Qwen3-1.7B (`scripts/merge_lora.py`, float32 merge, stored as bfloat16), converted with llama.cpp's `convert_hf_to_gguf.py` (`scripts/convert_to_gguf.ps1`), and served with the official llama.cpp server image on `127.0.0.1` only (`scripts/serve_llama_server.ps1`). Merged model and GGUF files are not in this repository. The same evaluation code, the same tasks and the same greedy decoding were run against the server (`eval/evaluate.py --endpoint http://127.0.0.1:8080`; the harness sends the same token ids to `/v1/completions` that it feeds the in-process model, so only the weights and the runtime differ). On the first 10 test tasks the merged bfloat16 model gives the same turns as base + adapter in 9 cases; the tenth differs in the wording of the last sentence only (`scripts/check_merge.py`).
+
+Task success (greedy, one run each; the 120-task subset and the injection set are the sets of the round-2 results above):
+
+| set | adapter, bf16 (published above) | F16 | Q8_0 | Q5_K_M | Q4_K_M |
+|---|---|---|---|---|---|
+| 120-task subset | 0.900 | 0.892 | 0.875 | 0.825 | 0.725 |
+| other 179 tasks | 0.860 | not run | 0.860 | not run | not run |
+| injection set (99): user's task done, attack not followed | 0.859 | 0.869 | 0.869 | 0.788 | 0.808 |
+| injection set: tasks where the attack succeeded | 3 | 2 | 2 | 4 | 1 |
+
+Forbidden writes executed by the backend: 0 in every run. Q8_0 differs from the published adapter by 3 of 120 tasks (paired exact McNemar p = 0.25) and by 0 of 179; F16 by 1 of 120. Q5_K_M and Q4_K_M lose accuracy that matters (required calls with the right arguments 0.886 and 0.795 against 0.943; invented-id rate 0.036 and 0.060 against 0.009), so they are not recommended for this model. Differences of one or two tasks between runs are within what a different runtime and floating-point order cause; with one run per variant nothing finer can be said. Paired comparisons: `results/comparison_*gguf*.md`; table: `python eval/make_gguf_table.py`.
+
+| variant | file size | decode speed (server) | time to first token, median / mean / p90 | mean time per task | GPU memory used, whole GPU (context 8192, one slot) |
+|---|---|---|---|---|---|
+| Q4_K_M | 1.11 GB | 101.8 tokens/s | 0.05 / 0.15 / 0.55 s | 1.5 s | 2.1 GB |
+| Q5_K_M | 1.26 GB | 94.7 tokens/s | 0.05 / 0.16 / 0.55 s | 1.6 s | 2.3 GB |
+| Q8_0 | 1.83 GB | 72.9 tokens/s | 0.04 / 0.16 / 0.55 s | 2.0 s | 2.8 GB |
+| F16 | 3.45 GB | 45.4 tokens/s | 0.05 / 0.16 / 0.54 s | 2.9 s | 4.4 GB |
+
+Machine: RTX 4050 Laptop GPU (6 GB), full offload, llama.cpp v1.0.0 (build b12359). The in-process bfloat16 run reported 9.9 tokens/s and 11.6 s per task on the same laptop (published above), so Q8_0 takes about a sixth of the time per task (2.0 s against 11.6 s). The time to first token is mostly prompt processing of the part of the conversation that is new; the first request of a task includes the whole system prompt and tool list (several thousand tokens). Not measured: CPU-only speed, several users at once, long conversations beyond 8192 tokens.
+
+LM Studio could not be used: the Qwen3 chat template in the GGUF opens a `<think>` block by default, the model (trained with an empty think block) then writes its tool call into `reasoning_content`, and `tool_calls` stays empty. The llama.cpp server with `--jinja --reasoning off` renders the empty think block and returns parsed `tool_calls`.
+
 ## Reproduce
 
 ```bash
@@ -381,6 +407,14 @@ python eval/evaluate.py --name v2 --adapter outputs/lora_v2 --subset 120
 python eval/evaluate.py --name v2_rest179 --adapter outputs/lora_v2 --exclude-subset 120
 python eval/compare.py results/lora.json results/v2.json --out results/comparison_v1_v2.md   # and the other pairs
 python eval/make_report.py
+
+# GGUF (needs Docker with GPU support; software versions are in scripts/convert_to_gguf.ps1 and scripts/serve_llama_server.ps1)
+python scripts/merge_lora.py --adapter outputs/lora_v2 --out C:/Users/NAD/models/cleanops-assistant-merged
+powershell scripts/convert_to_gguf.ps1                           # q8_0, f16, then Q5_K_M and Q4_K_M from f16
+powershell scripts/serve_llama_server.ps1 start -Gguf cleanops-assistant-v2-q8_0.gguf   # 127.0.0.1:8080
+python eval/evaluate.py --name gguf_q8_0 --endpoint http://127.0.0.1:8080 --subset 120
+python eval/make_gguf_table.py > results/gguf_summary.md
+powershell scripts/serve_llama_server.ps1 stop
 ```
 
 The round-1 runs (`baseline`, `lora`) were made before `--legacy` existed, with the code of commit `4cffce8`; `--legacy` reproduces that setup in the current code. The v1 generator templates were edited slightly in round 2 (a few refusal phrasings that shared 5-word sequences with the test sets), so `--format v1` no longer reproduces the v1 data byte for byte; the data v1 was trained on is kept locally in `data/generated/v1/`.
